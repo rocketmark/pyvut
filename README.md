@@ -13,7 +13,7 @@ This guide shows how to capture full 6DoF poses from HTC's VIVE Ultimate Tracker
 Do the initial SLAM map construction on Windows with SteamVR + VIVE Streaming Hub; after the tracker stores the map, you can return to Ubuntu for everything else in this guide.
 
 1. Install SteamVR.
-2. Enable the SteamVR "null driver" (virtual headset) using [SteamVRNoHeadset](https://github.com/roivaz/SteamVRNoHeadset).
+2. Enable the SteamVR "null driver" (virtual headset) using [SteamVRNoHeadset](https://github.com/username223/SteamVRNoHeadset).
 3. Install the VIVE Streaming Hub from HTC's site.
 4. Follow the VIVE Streaming Hub instructions to create a new map; you can ignore the final step that asks for a SteamVR headset connection.
 5. Once your trackers indicate they are "ready" in Streaming Hub, verify any additional requirements from the sections below (Wi-Fi config, dongle pairing, etc.).
