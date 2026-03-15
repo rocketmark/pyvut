@@ -61,19 +61,25 @@ Property: det(quaternion_to_rotation_matrix(q)) ≈ 1.0
 Strategy: generate unit quaternions, compute matrix, check determinant
 ```
 
-#### 1.3 Rotation composition closure
-Composing two valid rotations must yield a valid rotation.
+#### 1.3 Precision loss from float16 encoding does not break rotation matrix orthogonality
+float16 has 10-bit mantissa precision. After conversion, the resulting rotation matrix must remain orthogonal even under quantization error — rows must be mutually perpendicular and unit length.
 
 ```
-Property: ||q1 * q2|| ≈ 1.0  for any two unit quaternions q1, q2
-Strategy: generate pairs of unit quaternions, compose via Hamilton product, verify norm
+Property: for M = quaternion_to_rotation_matrix(parse_quaternion(encode_f16(q))),
+          M @ M.T ≈ I  (tolerance 0.01)
+Strategy: generate unit quaternions near gimbal-lock angles and large rotations,
+          encode as float16, decode, build matrix, check M @ M.T - I < tolerance
+Note: tests pyvut's conversion pipeline under realistic firmware precision, not just numpy math
 ```
 
-#### 1.4 Identity quaternion round-trip
-The identity rotation `[1, 0, 0, 0]` should survive encode/decode unchanged.
+#### 1.4 Non-trivial quaternion survives encode/decode with bounded error
+Quaternions with components near float16 representation boundaries (e.g. ±0.5, ±√2/2) are most susceptible to rounding. The round-trip error must stay within float16 precision limits.
 
 ```
-Property: decode(encode([1, 0, 0, 0])) == [1, 0, 0, 0]
+Property: ||parse_quaternion(encode_f16(q)) - q|| < 0.002  for normalized q
+Strategy: generate quaternions with components drawn from float16 boundary values
+          (±2^-n for n in 1..10), verify per-component error against float16 epsilon
+Note: replaces trivial identity test — focuses on precision boundaries where bugs appear
 ```
 
 ---
@@ -83,13 +89,16 @@ Property: decode(encode([1, 0, 0, 0])) == [1, 0, 0, 0]
 **Priority:** HIGH
 **Source:** `pyvut/tracker_core.py:809-838`
 
-#### 2.1 Position bounds
-`parse_pose_data()` unpacks position as float32x3 with no range validation. Garbage firmware values must not silently corrupt state.
+#### 2.1 Out-of-range positions are rejected or flagged
+`parse_pose_data()` unpacks position as float32x3 with no range validation. Garbage firmware values (NaN, Inf, values beyond any plausible play space) must not silently update tracker state.
 
 ```
-Property: all(-10.0 <= p[i] <= 10.0 for i in 0..2)  for any valid pose packet
-Strategy: generate synthetic pose packets with physically plausible positions; separately
-          generate packets with extreme values and verify error or skip behavior
+Property: parse_pose_data(packet_with_extreme_position) does not update pose_pos[idx]
+          OR sets tracking_status to an error state
+Strategy: construct valid pose packets with positions outside ±10m, ±1e6, NaN, and Inf;
+          verify tracker state is not silently updated with bad data
+Note: tests only the rejection path — generating in-bounds positions and asserting
+      they pass is trivially true by construction and is omitted
 ```
 
 #### 2.2 Packet size guard
@@ -181,10 +190,12 @@ MAP_CREATE       → MAP_EXIST
 ```
 
 ```
-Property: handle_map_state(current, next) accepts valid transitions,
-          rejects or logs invalid ones without corrupting state
-Strategy: Hypothesis RuleBasedStateMachine — valid transitions keep invariant,
-          random invalid transitions must not silently advance state
+Property: handle_map_state(current, invalid_next) does not advance state
+          (state remains `current` and an error is logged or raised)
+Strategy: Hypothesis RuleBasedStateMachine — for each state, generate transitions
+          outside its valid-successor set and verify state is unchanged after the call
+Note: testing that valid transitions are accepted is trivially true by definition
+      and is omitted; this test focuses entirely on invalid transition rejection
 ```
 
 #### 4.2 State stability under repeated same-state messages
@@ -226,12 +237,13 @@ Property: buttons_after(clear_packet) == 0
 Strategy: generate clear packets (all button bits zero), verify state
 ```
 
-#### 5.3 Single-packet edge case
-Receiving only one half of the pair (e.g. only a high byte) must not produce garbage state.
+#### 5.3 Incomplete pair does not corrupt prior button state
+Receiving only a high-byte packet (0x80 flag set) without a subsequent low-byte packet must leave button state unchanged from its last fully-committed value.
 
 ```
-Property: partial packet yields defined behavior (either 0 or previous state, not random)
-Strategy: send only high packet, verify state is deterministic
+Property: buttons_after_high_only(prev_state, high_packet) == prev_state
+Strategy: set a known prior button state via a complete pair; send only a high-byte packet;
+          verify button state equals the prior committed value, not a partial merge
 ```
 
 ---
@@ -251,12 +263,15 @@ Note: this test may expose a bug — the lower nibble of byte[1] ranges 0–15,
       but only slots 0–4 are valid. Behavior for nibbles 5–15 is undefined.
 ```
 
-#### 6.2 Consistent mapping
-Same MAC always maps to same index.
+#### 6.2 MACs that differ only outside byte[1] map to the same index
+`mac_to_idx` uses only `b[1] & 0xF`. Two MACs identical in byte[1] must yield the same index regardless of other bytes, and two MACs differing in byte[1] nibble must yield different indices.
 
 ```
-Property: mac_to_idx(mac) == mac_to_idx(mac)  (deterministic)
-Strategy: generate MACs, call twice, verify equal
+Property: mac_to_idx(mac_a) == mac_to_idx(mac_b)  iff  mac_a[1] & 0xF == mac_b[1] & 0xF
+Strategy: generate pairs of MACs sharing byte[1] but differing elsewhere → assert equal;
+          generate pairs differing in byte[1] nibble → assert unequal
+Note: replaces trivial f(x)==f(x) determinism check with a test of the actual
+      byte-field isolation contract
 ```
 
 ---
@@ -266,12 +281,15 @@ Strategy: generate MACs, call twice, verify equal
 **Priority:** MEDIUM
 **Source:** `ota_parse.py`
 
-#### 7.1 Round-trip: valid segment passes CRC
-A segment with a correctly computed CRC must verify.
+#### 7.1 CRC matches known reference vectors
+Validate `htc_crc128` against independently computed reference outputs, not by calling the same function twice. Reference vectors should be derived from a known-good LFSR implementation or from captured OTA images with published checksums.
 
 ```
-Property: htc_crc128(segment) == compute_crc(segment)
-Strategy: generate random byte segments, compute CRC, verify passes
+Property: htc_crc128(segment) == expected_crc  for each reference vector
+Strategy: use at minimum three hard-coded (segment, crc) pairs derived from an
+          independent LFSR implementation or real OTA captures; parametrize as pytest cases
+Note: replaces htc_crc128(x) == compute_crc(x) which is f(x)==f(x) if compute_crc
+      is the same function — reference vectors are the only meaningful oracle here
 ```
 
 #### 7.2 Corruption detection
@@ -307,12 +325,16 @@ Strategy: spawn writer process doing rapid writes; reader checks field consisten
           run for N iterations, assert no torn reads observed
 ```
 
-#### 8.2 Valid flag consistency
-If `valid[idx]` is False, no pose fields for that slot should be trusted.
+#### 8.2 Valid flag is False for all slots before any write
+A freshly initialized `SharedPoseBuffer` must report `valid[idx] == False` for every slot before any pose is written. This guards against uninitialized shared memory being read as a live pose.
 
 ```
-Property: valid[idx] == False => pose fields may be uninitialized (test documents this contract)
-Strategy: read fresh SharedPoseBuffer before any write, verify valid flags are all False
+Property: for all idx in 0..4, SharedPoseBuffer().valid[idx] == False
+Strategy: instantiate SharedPoseBuffer without any write_pose calls;
+          assert valid[idx] is False for all 5 slots;
+          then write one slot and assert only that slot flips to True
+Note: replaces "may be uninitialized" (unfalsifiable) with a concrete assertion
+      about the flag transition on first write
 ```
 
 ---
