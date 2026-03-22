@@ -186,7 +186,7 @@ class DongleHID(Ackable):
 
         # TODO better error handling
         device_dict_hid1 = [device for device in device_list if device['interface_number'] == HID1_INTERFACE_NUM][0]
-        self.device_hid1 = hid.device(); self.device_hid1.open_path(device_dict_hid1['path'])
+        self.device_hid1 = hid.Device(path=device_dict_hid1['path'])
 
         verbose_print(self.get_PCBID()) # RequestPCBID
         verbose_print(self.get_SKUID()) # RequestSKUID
@@ -535,19 +535,18 @@ class TrackerHID(Ackable):
 
         #Find the device with the particular usage you want
         device_dict_hid1 = [device for device in device_list if device['interface_number'] == HID1_INTERFACE_NUM][0]
-        self.device_hid1 = hid.device(); self.device_hid1.open_path(device_dict_hid1['path'])
+        self.device_hid1 = hid.Device(path=device_dict_hid1['path'])
 
         '''
         device_dict_hid3 = [device for device in device_list if device['interface_number'] == HID3_INTERFACE_NUM][0]
         device_hid3 = hid.device(); device_hid3.open_path(device_dict_hid3['path'])
         '''
 
-        #self.set_tracking_mode(TRACKING_MODE_SLAM_HOST)
-        #self.set_tracking_mode(0xFFFFFFFF)
-        #self.set_tracking_mode(TRACKING_MODE_SLAM_HOST)
-        self.set_camera_policy(3)
-        self.set_camera_fps(60)
-        self.set_power_pcvr(TRACKING_MODE_SLAM_HOST)
+        # NOTE: set_camera_policy / set_camera_fps cause tracker reboot when
+        # persist.lambda.3rdhost=0 (unconfigured).  PACKET_SET_TRACKING_MODE
+        # (0xa003) is the correct working command; PACKET_SET_POWER_PCVR
+        # (0xa102) is silently ignored by the tracker firmware.
+        self.set_tracking_mode(TRACKING_MODE_SLAM_HOST)
 
         wifi_path = Path(wifi_info_path) if wifi_info_path else Path(__file__).with_name('wifi_info.json')
         with wifi_path.open('r', encoding='utf-8') as f:
@@ -576,7 +575,6 @@ class TrackerHID(Ackable):
         out += bytes(data)
 
         out += bytes([0x0] * (0x40 - len(out)))
-        out = bytes([0x00]) + out  # macOS hidapi requires report ID prefix
 
         try:
             ret = self.device_hid1.send_feature_report(out)
@@ -631,7 +629,7 @@ class TrackerHID(Ackable):
         self.send_command(PACKET_GET_PROPERTY, key.encode("utf-8"))
 
     def parse_incoming(self):
-        resp = self.device_hid1.read(0x400, timeout_ms=1000)
+        resp = self.device_hid1.read(0x400, timeout=1000)
         if len(resp) <= 0:
             return
         unk0, pkt_idx, mask, hmd_us, hdcc_status0, hdcc_status1, ack_in_queue, device_status, unk3 = struct.unpack("<BHLQBBBL17s", resp[:0x27])

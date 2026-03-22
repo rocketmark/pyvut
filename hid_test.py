@@ -118,7 +118,7 @@ print(device_list)
 
 #Find the device with the particular usage you want
 device_dict_hid1 = [device for device in device_list if device['interface_number'] == HID1_INTERFACE_NUM][0]
-device_hid1 = hid.device(); device_hid1.open_path(device_dict_hid1['path'])
+device_hid1 = hid.Device(path=device_dict_hid1['path'])
 
 '''
 device_dict_hid3 = [device for device in device_list if device['interface_number'] == HID3_INTERFACE_NUM][0]
@@ -236,7 +236,7 @@ def parse_pose_data(data):
     print(hex(idx), unk0, unk1, unk2, unk3, "moves:", moves_arr, "pos?:", pos_arr, "unk?:", unk8_arr, unk10)
 
 def parse_incoming():
-    resp = device_hid1.read(0x400, timeout_ms=500)
+    resp = device_hid1.read(0x400, timeout=500)
     if len(resp) <= 0:
         return
     unk0, pkt_idx, mask, hmd_us, hdcc_status0, hdcc_status1, ack_in_queue, device_status, unk3 = struct.unpack("<BHLQBBBL17s", resp[:0x27])
@@ -293,11 +293,10 @@ def set_camera_fps(val):
 #get_property("ro.build.fingerprint")
 
 
-set_camera_policy(3)
-set_camera_fps(60)
-
-# Seems to get packets flowing?
-set_power_pcvr(1)
+# NOTE: set_camera_policy / set_camera_fps crash the tracker when
+# persist.lambda.3rdhost=0.  Use set_tracking_mode (0xa003) instead.
+# set_power_pcvr (0xa102) is silently ignored by firmware.
+set_tracking_mode(20)  # TRACKING_MODE_SLAM_HOST
 for i in range(0, 100):
     parse_incoming()
     kick_watchdog()
